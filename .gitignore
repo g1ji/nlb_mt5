@@ -1,0 +1,40 @@
+# Local environment
+env
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment variables file
+.env
+
+# Virtual environment
+venv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Editor backup files
+*~
+
+# Compiled Python files
+*.pyc
+
+# Database
+your_database.db
+
+# Logs
+logs/
+
+# Other temporary files
+*.swp
+.DS_Store
+
+#upload dir
+upload
+
+#mt5
+accounts/

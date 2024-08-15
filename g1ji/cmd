@@ -1,0 +1,3 @@
+pip install MetaTrader5 websockets flask
+pip install psutil
+pip install python-dotenv
