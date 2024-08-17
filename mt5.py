@@ -3,9 +3,11 @@ import shutil
 import time
 import signal
 import psutil
-import sqlite3
 import uuid
+import subprocess
 import MetaTrader5 as mt5
+from pymongo import MongoClient
+
 
 # import MetaTrader5 as mt5
 
@@ -16,22 +18,12 @@ import MetaTrader5 as mt5
 # if not mt5.initialize(mt5_path):
 #     print("initialize() failed, error code =", mt5.last_error())
 #     quit()
-db_path = "login_data.db"
 base_path = os.getcwd()
-conn = sqlite3.connect(db_path, check_same_thread=False)
-cursor = conn.cursor()
 
-cursor.execute(
-    """
-    CREATE TABLE IF NOT EXISTS accounts (
-        id TEXT PRIMARY KEY,
-        token TEXT NOT NULL,
-        account_id INTEGER NOT NULL,
-        password TEXT NOT NULL,
-        broker_name TEXT NOT NULL
-    )
-"""
-)
+# MongoDB setup
+client = MongoClient("mongodb://localhost:27017/")
+db = client["mt5_database"]
+accounts_collection = db["accounts"]
 
 
 def copy_contents_if_not_exists(source_dir, destination_dir):
@@ -124,29 +116,41 @@ def setup_account(account_id):
     meta_trader = os.path.join(base_path, "meta-trader")
     copy_contents_if_not_exists(meta_trader, account_path)
     account_path = os.path.join(account_path, "terminal64.exe")
-    # subprocess.Popen([account_path, '/portable'])
-    # time.sleep(5)
+    subprocess.Popen([account_path, '/portable'])
+    time.sleep(2)
     if not mt5.initialize(path=account_path, portable=True):
         print("initialize() failed, error code =", mt5.last_error())
+        mt5.shutdown()
         quit()
 
 
 def mt5_login_account(api_id, account_id, password, broker_name):
-    login_result = mt5.login(login=account_id, password=password, server=broker_name)
+    # Initialize MetaTrader 5
+    if not mt5.initialize():
+        return {
+            "success": False,
+            "message": "initialize() failed, error code =" + mt5.last_error(),
+        }
     
+    login_result = mt5.login(login=account_id, password=password, server=broker_name)
+
     if login_result:
         random_unique_id = str(uuid.uuid4())
-        
+
         # Insert or replace the record
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO accounts (id, token, account_id, password, broker_name)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (api_id, random_unique_id, account_id, password, broker_name),
+        accounts_collection.update_one(
+            {"id": api_id},
+            {
+                "$set": {
+                    "token": random_unique_id,
+                    "account_id": account_id,
+                    "password": password,
+                    "broker_name": broker_name,
+                }
+            },
+            upsert=True,
         )
-        conn.commit()
-        
+
         return {
             "success": True,
             "message": "Connected to the account successfully",
@@ -161,39 +165,30 @@ def mt5_login_account(api_id, account_id, password, broker_name):
 
 def get_account_by_token(token):
     try:
-        cursor.execute(
-            """
-            SELECT account_id, password, broker_name
-            FROM accounts
-            WHERE id = ?
-        """,
-            (token,),
-        )
-
-        # Fetch the result
-        account = cursor.fetchone()
+        account = accounts_collection.find_one({"token": token})
 
         if account:
-            account_id, password, broker_name = account
             return {
-                "account_id": account_id,
-                "password": password,
-                "broker_name": broker_name,
+                "success": True,
+                "api_id": account["id"],
+                "account_id": account["account_id"],
+                "password": account["password"],
+                "broker_name": account["broker_name"],
             }
-
         else:
             return None
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        return None
+    except Exception as e:
+        return {"success": False, "message": f"Database error: {e}"}
 
 
-def get_positions(symbol=None):
+def get_mt5_positions(symbol=None):
     # Initialize MetaTrader 5
     if not mt5.initialize():
-        print("Failed to initialize MetaTrader 5, error code =", mt5.last_error())
-        return None
+        return {
+            "success": False,
+            "message": "initialize() failed, error code =" + mt5.last_error(),
+        }
 
     # Fetch positions
     if symbol:
@@ -203,7 +198,6 @@ def get_positions(symbol=None):
 
     if positions is None or len(positions) == 0:
         print("No positions found.")
-        mt5.shutdown()
         return None
 
     # Display each position's details
@@ -229,12 +223,10 @@ def get_positions(symbol=None):
             f"Profit: {position.profit}, SL: {position.sl}, TP: {position.tp}, "
             f"Comment: {position.comment}"
         )
-
-    mt5.shutdown()
     return positions_list
 
 
-def place_order(
+def place_mt5_order(
     action,
     magic,
     order=None,
@@ -253,47 +245,56 @@ def place_order(
     position=None,
     position_by=None,
 ):
-
     # Required fields check
     if action is None:
-        print("Error: 'action' is a required field.")
-        return False
+        return {"success": False, "message": "Error: 'action' is a required field."}
     if magic is None:
-        print("Error: 'magic' is a required field.")
-        return False
+        return {"success": False, "message": "Error: 'magic' is a required field."}
     if (
         symbol is None
         and action != mt5.TRADE_ACTION_MODIFY
         and action != mt5.TRADE_ACTION_REMOVE
     ):
-        print("Error: 'symbol' is a required field when placing or closing orders.")
-        return False
+        return {
+            "success": False,
+            "message": "Error: 'symbol' is a required field when placing or closing orders.",
+        }
     if volume is None and action == mt5.TRADE_ACTION_DEAL:
-        print("Error: 'volume' is a required field when placing a deal.")
-        return False
+        return {
+            "success": False,
+            "message": "Error: 'volume' is a required field when placing a deal.",
+        }
     if price is None and action == mt5.TRADE_ACTION_PENDING:
-        print("Error: 'price' is a required field when placing a pending order.")
-        return False
+        return {
+            "success": False,
+            "message": "Error: 'price' is a required field when placing a pending order.",
+        }
     if order_type is None:
-        print("Error: 'order_type' is a required field.")
-        return False
+        return {
+            "success": False,
+            "message": "Error: 'order_type' is a required field.",
+        }
     if type_filling is None:
-        print("Error: 'type_filling' is a required field.")
-        return False
+        return {
+            "success": False,
+            "message": "Error: 'type_filling' is a required field.",
+        }
     if type_time is None:
-        print("Error: 'type_time' is a required field.")
-        return False
+        return {"success": False, "message": "Error: 'type_time' is a required field."}
 
     # Initialize MetaTrader 5
     if not mt5.initialize():
-        print("initialize() failed, error code =", mt5.last_error())
-        return False
+        return {
+            "success": False,
+            "message": "initialize() failed, error code =" + mt5.last_error(),
+        }
 
     # If a symbol is provided, ensure it is available in MarketWatch
     if symbol and not mt5.symbol_select(symbol, True):
-        print(f"Failed to select {symbol}, error code =", mt5.last_error())
-        mt5.shutdown()
-        return False
+        return {
+            "success": False,
+            "message": f"Failed to select {symbol}, error code =" + mt5.last_error(),
+        }
 
     # Create the order request dictionary
     request = {
@@ -319,17 +320,21 @@ def place_order(
     # Filter out None values (these are optional parameters)
     request = {k: v for k, v in request.items() if v is not None}
 
+    print(request)
     # Send the order
     result = mt5.order_send(request)
-    mt5.shutdown()
 
     # Check result
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"Order failed, retcode={result.retcode}, message={result.comment}")
-        return False
+        return {
+            "success": False,
+            "message": f"Order failed, retcode={result.retcode}, message={result.comment}",
+        }
 
-    print(f"Order placed successfully! Return code: {result.retcode}")
-    return True
+    return {
+        "success": True,
+        "message": f"Order placed successfully! Return code: {result.retcode}",
+    }
 
 
 def close_position(
@@ -337,14 +342,15 @@ def close_position(
 ):
     # Initialize MetaTrader 5
     if not mt5.initialize():
-        print("Failed to initialize MetaTrader 5, error code =", mt5.last_error())
-        return False
+        return {
+            "success": False,
+            "message": "initialize() failed, error code =" + mt5.last_error(),
+        }
 
     # Get the position details
     position = mt5.positions_get(ticket=position_ticket)
     if position is None or len(position) == 0:
         print(f"Position with ticket {position_ticket} not found.")
-        mt5.shutdown()
         return False
 
     position = position[
@@ -359,7 +365,6 @@ def close_position(
         order_type = mt5.ORDER_TYPE_BUY
     else:
         print(f"Unsupported position type: {position.type}")
-        mt5.shutdown()
         return False
 
     # Use the full volume if not specified
@@ -381,7 +386,6 @@ def close_position(
 
     # Send the order to close the position
     result = mt5.order_send(request)
-    mt5.shutdown()
 
     # Check the result
     if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -392,3 +396,6 @@ def close_position(
 
     print(f"Position closed successfully! Return code: {result.retcode}")
     return True
+
+
+print(mt5.TRADE_ACTION_DEAL)
