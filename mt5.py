@@ -9,21 +9,15 @@ import MetaTrader5 as mt5
 from pymongo import MongoClient
 
 
-# import MetaTrader5 as mt5
-
-# Set the path to the MetaTrader 5 terminal executable
-# mt5_path = r"C:\Path\To\MetaTrader 5\terminal64.exe"  # Update this path
-
-# Initialize MetaTrader 5 with the specific terminal location
-# if not mt5.initialize(mt5_path):
-#     print("initialize() failed, error code =", mt5.last_error())
-#     quit()
 base_path = os.getcwd()
 
 # MongoDB setup
 client = MongoClient("mongodb://localhost:27017/")
 db = client["mt5_database"]
 accounts_collection = db["accounts"]
+account_id = int(time.time())
+
+print("=======", account_id)
 
 
 def copy_contents_if_not_exists(source_dir, destination_dir):
@@ -70,7 +64,10 @@ def shutdown_metatrader5_by_id(account_id):
     account_path = os.path.join(base_path, "accounts", str(account_id))
     account_path = os.path.join(account_path, "terminal64.exe")
     if not mt5.shutdown():
-        print("shutdown() failed, error code =", mt5.last_error())
+        error_code, error_message = mt5.last_error()
+        print(
+            f"initialize() failed, error code = {error_code}, message = {error_message}"
+        )
     # else:
     #     print("MetaTrader 5 has been shut down successfully")
 
@@ -110,16 +107,19 @@ def re_setup_account(account_id):
     setup_account(account_id)
 
 
-def setup_account(account_id):
+def setup_account():
     remove_account(account_id)
     account_path = os.path.join(base_path, "accounts", str(account_id))
     meta_trader = os.path.join(base_path, "meta-trader")
     copy_contents_if_not_exists(meta_trader, account_path)
     account_path = os.path.join(account_path, "terminal64.exe")
-    subprocess.Popen([account_path, '/portable'])
+    subprocess.Popen([account_path, "/portable"])
     time.sleep(2)
     if not mt5.initialize(path=account_path, portable=True):
-        print("initialize() failed, error code =", mt5.last_error())
+        error_code, error_message = mt5.last_error()
+        print(
+            f"initialize() failed, error code = {error_code}, message = {error_message}"
+        )
         mt5.shutdown()
         quit()
 
@@ -127,11 +127,12 @@ def setup_account(account_id):
 def mt5_login_account(api_id, account_id, password, broker_name):
     # Initialize MetaTrader 5
     if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
         return {
             "success": False,
-            "message": "initialize() failed, error code =" + mt5.last_error(),
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
         }
-    
+
     login_result = mt5.login(login=account_id, password=password, server=broker_name)
 
     if login_result:
@@ -157,9 +158,10 @@ def mt5_login_account(api_id, account_id, password, broker_name):
             "data": {"token": random_unique_id},
         }
     else:
+        error_code, error_message = mt5.last_error()
         return {
             "success": False,
-            "message": f"Failed to connect to the account. Error code: {mt5.last_error()}",
+            "message": f"Failed to connect to the account. Error code:  {error_code}, message = {error_message}",
         }
 
 
@@ -169,7 +171,6 @@ def get_account_by_token(token):
 
         if account:
             return {
-                "success": True,
                 "api_id": account["id"],
                 "account_id": account["account_id"],
                 "password": account["password"],
@@ -182,12 +183,13 @@ def get_account_by_token(token):
         return {"success": False, "message": f"Database error: {e}"}
 
 
-def get_mt5_positions(symbol=None):
+def get_mt5_positions(symbol=None, order_type=None):
     # Initialize MetaTrader 5
     if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
         return {
             "success": False,
-            "message": "initialize() failed, error code =" + mt5.last_error(),
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
         }
 
     # Fetch positions
@@ -196,9 +198,23 @@ def get_mt5_positions(symbol=None):
     else:
         positions = mt5.positions_get()
 
+    # Handle the case where no positions are found
     if positions is None or len(positions) == 0:
-        print("No positions found.")
-        return None
+        return {"success": False, "message": "No positions found."}
+
+    # Filter positions by order type if provided
+    if order_type:
+        order_type = order_type.capitalize()
+        if order_type not in ["Buy", "Sell"]:
+            return {
+                "success": False,
+                "message": "Invalid order type. Must be 'Buy' or 'Sell'.",
+            }
+
+        mt5_order_type = (
+            mt5.ORDER_TYPE_BUY if order_type == "Buy" else mt5.ORDER_TYPE_SELL
+        )
+        positions = [pos for pos in positions if pos.type == mt5_order_type]
 
     # Display each position's details
     positions_list = []
@@ -216,14 +232,14 @@ def get_mt5_positions(symbol=None):
             "comment": position.comment,
         }
         positions_list.append(pos_dict)
-        print(
-            f"Ticket: {position.ticket}, Symbol: {position.symbol}, "
-            f"Volume: {position.volume}, Type: {pos_dict['type']}, "
-            f"Open Price: {position.price_open}, Current Price: {position.price_current}, "
-            f"Profit: {position.profit}, SL: {position.sl}, TP: {position.tp}, "
-            f"Comment: {position.comment}"
-        )
-    return positions_list
+
+    return {
+        "success": True,
+        "message": "Positions retrieved successfully.",
+        "data": {
+            "positions": positions_list,
+        },
+    }
 
 
 def place_mt5_order(
@@ -284,16 +300,18 @@ def place_mt5_order(
 
     # Initialize MetaTrader 5
     if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
         return {
             "success": False,
-            "message": "initialize() failed, error code =" + mt5.last_error(),
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
         }
 
     # If a symbol is provided, ensure it is available in MarketWatch
     if symbol and not mt5.symbol_select(symbol, True):
+        error_code, error_message = mt5.last_error()
         return {
             "success": False,
-            "message": f"Failed to select {symbol}, error code =" + mt5.last_error(),
+            "message": f"Failed to select {symbol}, error code = {error_code}, message = {error_message}",
         }
 
     # Create the order request dictionary
@@ -320,9 +338,15 @@ def place_mt5_order(
     # Filter out None values (these are optional parameters)
     request = {k: v for k, v in request.items() if v is not None}
 
-    print(request)
     # Send the order
     result = mt5.order_send(request)
+
+    if result is None:
+        error_code, error_message = mt5.last_error()
+        return {
+            "success": False,
+            "message": "Order send failed: error code = {error_code}, message = {error_message}",
+        }
 
     # Check result
     if result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -337,21 +361,25 @@ def place_mt5_order(
     }
 
 
-def close_position(
-    position_ticket, symbol, volume=None, deviation=20, comment="Python close position"
+def close_positions_by_ticket_id(
+    position_ticket, volume=None, deviation=20, comment="Python close position"
 ):
     # Initialize MetaTrader 5
     if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
         return {
             "success": False,
-            "message": "initialize() failed, error code =" + mt5.last_error(),
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
         }
 
     # Get the position details
     position = mt5.positions_get(ticket=position_ticket)
+
     if position is None or len(position) == 0:
-        print(f"Position with ticket {position_ticket} not found.")
-        return False
+        return {
+            "success": False,
+            "message": f"Position with ticket {position_ticket} not found.",
+        }
 
     position = position[
         0
@@ -364,8 +392,10 @@ def close_position(
     elif position.type == mt5.ORDER_TYPE_SELL:
         order_type = mt5.ORDER_TYPE_BUY
     else:
-        print(f"Unsupported position type: {position.type}")
-        return False
+        return {
+            "success": False,
+            "message": f"Unsupported position type: {position.type}",
+        }
 
     # Use the full volume if not specified
     if volume is None:
@@ -374,7 +404,7 @@ def close_position(
     # Create the close order request
     request = {
         "action": action,
-        "symbol": symbol,
+        "symbol": position.symbol,
         "volume": volume,
         "type": order_type,
         "position": position_ticket,  # Specify the position to close
@@ -389,13 +419,114 @@ def close_position(
 
     # Check the result
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(
-            f"Failed to close position, retcode={result.retcode}, message={result.comment}"
-        )
-        return False
+        return {
+            "success": False,
+            "message": f"Failed to close position, retcode={result.retcode}, message={result.comment}",
+        }
 
-    print(f"Position closed successfully! Return code: {result.retcode}")
-    return True
+    return {
+        "success": True,
+        "message": f"Position closed successfully! Return code: {result.retcode}",
+    }
 
 
-print(mt5.TRADE_ACTION_DEAL)
+def get_subscribed_symbols():
+    # Initialize MetaTrader 5
+    if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
+        return {
+            "success": False,
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
+        }
+
+    # Fetch subscribed symbols
+    symbols = mt5.symbols_get()
+
+    # Handle the case where no symbols are found
+    if symbols is None or len(symbols) == 0:
+        return {"success": False, "message": "No subscribed symbols found."}
+
+    # Create a list of symbol names
+    subscribed_symbols = [symbol.name for symbol in symbols]
+
+    return {
+        "success": True,
+        "message": "Subscribed symbols retrieved successfully.",
+        "data": {
+            "symbols": subscribed_symbols,
+        },
+    }
+
+
+def get_mt5_symbol_info(symbol=None):
+    # Initialize MetaTrader 5
+    if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
+        return {
+            "success": False,
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
+        }
+
+    if not mt5.symbol_select(symbol, True):
+        error_code, error_message = mt5.last_error()
+        return {
+            "success": False,
+            "message": f"Failed to select {symbol}, error code = {error_code}, message = {error_message}",
+        }
+    time.sleep(0.2)
+    # Fetch subscribed symbols
+    symbol_info = mt5.symbol_info(symbol)
+
+    if symbol_info is None:
+        return {
+            "success": False,
+            "message": f"Symbol '{symbol}' not found or not subscribed.",
+        }
+
+    # symbol_info_dict = {}
+    # for attr in dir(symbol_info):
+    #     if not attr.startswith('__') and not callable(getattr(symbol_info, attr)):
+    #         symbol_info_dict[attr] = getattr(symbol_info, attr)
+    # print(symbol_info_dict)
+
+    if symbol_info.bid and symbol_info.last:
+        daily_change = (symbol_info.last - symbol_info.bid) / symbol_info.bid * 100
+    else:
+        daily_change = None
+
+    return {
+        "success": True,
+        "message": "Subscribed symbols retrieved successfully.",
+        "data": {
+            "symbols": {
+                "symbol": symbol_info.name,
+                "bid": symbol_info.bid,
+                "ask": symbol_info.ask,
+                "daily_change": daily_change,
+            }
+        },
+    }
+
+
+def get_mt5_account_info():
+    # Initialize MetaTrader 5
+    if not mt5.initialize():
+        error_code, error_message = mt5.last_error()
+        return {
+            "success": False,
+            "message": f"initialize() failed, error code = {error_code}, message = {error_message}",
+        }
+
+    # Fetch subscribed symbols
+    account_info = mt5.account_info()
+
+    info = {}
+    for attr in dir(account_info):
+        if not attr.startswith("__") and not callable(getattr(account_info, attr)):
+            info[attr] = getattr(account_info, attr)
+
+    return {
+        "success": True,
+        "message": "Account info",
+        "data": {"symbols": info},
+    }

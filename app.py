@@ -9,8 +9,7 @@ if __name__ == "__main__":
     remove_all_account()
     time.sleep(2)
     terminate_all_metatrader5()
-    ts = int(time.time())
-    setup_account(ts)
+    setup_account()
     APP_ENV = config.get("APP_ENV") or "default"
     app = create_app(APP_ENV)
     app.run(host="0.0.0.0", port=app.config.get("PORT"))

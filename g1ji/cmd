@@ -1,3 +1,12 @@
 pip install MetaTrader5 websockets flask
 pip install psutil
 pip install python-dotenv
+
+
+
+{
+    "api_id": 2,
+    "account_id": 213075519,
+    "password": "T4u&En&%",
+    "broker_name": "OctaFX-Demo"
+}
